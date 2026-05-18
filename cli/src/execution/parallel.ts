@@ -25,7 +25,7 @@ import { notifyTaskComplete, notifyTaskFailed } from "../ui/notify.ts";
 import { resolveConflictsWithAI } from "./conflict-resolution.ts";
 import { clearDeferredTask, recordDeferredTask } from "./deferred.ts";
 import { buildParallelPrompt } from "./prompt.ts";
-import { isRetryableError, withRetry } from "./retry.ts";
+import { isRetryableError } from "./retry.ts";
 import { commitSandboxChanges } from "./sandbox-git.ts";
 import { cleanupSandbox, createSandbox, getModifiedFiles, getSandboxBase } from "./sandbox.ts";
 import type { ExecutionOptions, ExecutionResult } from "./sequential.ts";
@@ -54,8 +54,6 @@ async function runAgentInWorktree(
 	prdSource: string,
 	prdFile: string,
 	prdIsFolder: boolean,
-	maxRetries: number,
-	retryDelay: number,
 	skipTests: boolean,
 	skipLint: boolean,
 	browserEnabled: "auto" | "true" | "false",
@@ -110,21 +108,13 @@ async function runAgentInWorktree(
 			browserEnabled,
 		});
 
-		// Execute with retry
+		// Execute once. Agent runs are stateful; retrying the entire run after a transient
+		// error can replay work and look like the agent randomly restarted the TODO.
 		const engineOptions = {
 			...(modelOverride && { modelOverride }),
 			...(engineArgs && engineArgs.length > 0 && { engineArgs }),
 		};
-		const result = await withRetry(
-			async () => {
-				const res = await engine.execute(prompt, worktreeDir, engineOptions);
-				if (!res.success && res.error && isRetryableError(res.error)) {
-					throw new Error(res.error);
-				}
-				return res;
-			},
-			{ maxRetries, retryDelay },
-		);
+		const result = await engine.execute(prompt, worktreeDir, engineOptions);
 
 		return { task, agentNum, worktreeDir, branchName, result };
 	} catch (error) {
@@ -148,8 +138,6 @@ async function runAgentInSandbox(
 	prdSource: string,
 	prdFile: string,
 	prdIsFolder: boolean,
-	maxRetries: number,
-	retryDelay: number,
 	skipTests: boolean,
 	skipLint: boolean,
 	browserEnabled: "auto" | "true" | "false",
@@ -204,21 +192,13 @@ async function runAgentInSandbox(
 			allowCommit: false,
 		});
 
-		// Execute with retry
+		// Execute once. Agent runs are stateful; retrying the entire run after a transient
+		// error can replay work and look like the agent randomly restarted the TODO.
 		const engineOptions = {
 			...(modelOverride && { modelOverride }),
 			...(engineArgs && engineArgs.length > 0 && { engineArgs }),
 		};
-		const result = await withRetry(
-			async () => {
-				const res = await engine.execute(prompt, sandboxDir, engineOptions);
-				if (!res.success && res.error && isRetryableError(res.error)) {
-					throw new Error(res.error);
-				}
-				return res;
-			},
-			{ maxRetries, retryDelay },
-		);
+		const result = await engine.execute(prompt, sandboxDir, engineOptions);
 
 		return { task, agentNum, worktreeDir: sandboxDir, branchName, result, usedSandbox: true };
 	} catch (error) {
@@ -392,8 +372,6 @@ export async function runParallel(
 					prdSource,
 					prdFile,
 					prdIsFolder,
-					maxRetries,
-					retryDelay,
 					skipTests,
 					skipLint,
 					browserEnabled,
@@ -415,8 +393,6 @@ export async function runParallel(
 				prdSource,
 				prdFile,
 				prdIsFolder,
-				maxRetries,
-				retryDelay,
 				skipTests,
 				skipLint,
 				browserEnabled,

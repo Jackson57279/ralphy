@@ -5,7 +5,6 @@ import { createEngine, isEngineAvailable } from "../../engines/index.ts";
 import type { AIEngineName } from "../../engines/types.ts";
 import { isBrowserAvailable } from "../../execution/browser.ts";
 import { buildPrompt } from "../../execution/prompt.ts";
-import { isRetryableError, withRetry } from "../../execution/retry.ts";
 import { sendNotifications } from "../../notifications/webhook.ts";
 import { formatTokens, logError, logInfo, setVerbose } from "../../ui/logger.ts";
 import { notifyTaskComplete, notifyTaskFailed } from "../../ui/notify.ts";
@@ -62,45 +61,26 @@ export async function runTask(task: string, options: RuntimeOptions): Promise<vo
 	}
 
 	try {
-		const result = await withRetry(
-			async () => {
-				spinner.updateStep("Working");
+		spinner.updateStep("Working");
 
-				// Build engine options
-				const engineOptions = {
-					...(options.modelOverride && { modelOverride: options.modelOverride }),
-					...(options.engineArgs &&
-						options.engineArgs.length > 0 && { engineArgs: options.engineArgs }),
-				};
+		// Execute once. Agent runs are stateful; retrying the whole run can replay partial
+		// file changes and look like the agent randomly restarted the task.
+		const engineOptions = {
+			...(options.modelOverride && { modelOverride: options.modelOverride }),
+			...(options.engineArgs &&
+				options.engineArgs.length > 0 && { engineArgs: options.engineArgs }),
+		};
 
-				// Use streaming if available
-				if (engine.executeStreaming) {
-					return await engine.executeStreaming(
-						prompt,
-						workDir,
-						(step) => {
-							spinner.updateStep(step);
-						},
-						engineOptions,
-					);
-				}
-
-				const res = await engine.execute(prompt, workDir, engineOptions);
-
-				if (!res.success && res.error && isRetryableError(res.error)) {
-					throw new Error(res.error);
-				}
-
-				return res;
-			},
-			{
-				maxRetries: options.maxRetries,
-				retryDelay: options.retryDelay,
-				onRetry: (attempt) => {
-					spinner.updateStep(`Retry ${attempt}`);
-				},
-			},
-		);
+		const result = engine.executeStreaming
+			? await engine.executeStreaming(
+					prompt,
+					workDir,
+					(step) => {
+						spinner.updateStep(step);
+					},
+					engineOptions,
+				)
+			: await engine.execute(prompt, workDir, engineOptions);
 
 		if (result.success) {
 			const tokens = formatTokens(result.inputTokens, result.outputTokens);

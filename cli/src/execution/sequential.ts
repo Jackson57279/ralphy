@@ -9,7 +9,7 @@ import { notifyTaskComplete, notifyTaskFailed } from "../ui/notify.ts";
 import { ProgressSpinner } from "../ui/spinner.ts";
 import { clearDeferredTask, recordDeferredTask } from "./deferred.ts";
 import { buildPrompt } from "./prompt.ts";
-import { isFatalError, isRetryableError, sleep, withRetry } from "./retry.ts";
+import { isFatalError, isRetryableError } from "./retry.ts";
 
 export interface ExecutionOptions {
 	engine: AIEngine;
@@ -62,7 +62,6 @@ export async function runSequential(options: ExecutionOptions): Promise<Executio
 		dryRun,
 		maxIterations,
 		maxRetries,
-		retryDelay,
 		branchPerTask,
 		baseBranch,
 		createPr,
@@ -133,42 +132,28 @@ export async function runSequential(options: ExecutionOptions): Promise<Executio
 			spinner.success("(dry run) Skipped");
 		} else {
 			try {
-				aiResult = await withRetry(
-					async () => {
-						spinner.updateStep("Working");
+				spinner.updateStep("Working");
 
-						// Use streaming if available
-						const engineOptions = {
-							...(modelOverride && { modelOverride }),
-							...(engineArgs && engineArgs.length > 0 && { engineArgs }),
-						};
-						if (engine.executeStreaming) {
-							return await engine.executeStreaming(
-								prompt,
-								workDir,
-								(step) => {
-									spinner.updateStep(step);
-								},
-								engineOptions,
-							);
-						}
-
-						const res = await engine.execute(prompt, workDir, engineOptions);
-
-						if (!res.success && res.error && isRetryableError(res.error)) {
-							throw new Error(res.error);
-						}
-
-						return res;
-					},
-					{
-						maxRetries,
-						retryDelay,
-						onRetry: (attempt) => {
-							spinner.updateStep(`Retry ${attempt}`);
+				// Do not retry a whole agent run in-process. Agent runs are stateful and may have
+				// already changed files; rerunning the same prompt after a transient CLI error makes
+				// the agent appear to randomly restart the current TODO. Retryable failures are
+				// handled below by deferring the task to a later Ralphy invocation instead.
+				const engineOptions = {
+					...(modelOverride && { modelOverride }),
+					...(engineArgs && engineArgs.length > 0 && { engineArgs }),
+				};
+				if (engine.executeStreaming) {
+					aiResult = await engine.executeStreaming(
+						prompt,
+						workDir,
+						(step) => {
+							spinner.updateStep(step);
 						},
-					},
-				);
+						engineOptions,
+					);
+				} else {
+					aiResult = await engine.execute(prompt, workDir, engineOptions);
+				}
 
 				if (aiResult.success) {
 					spinner.success(undefined, true); // Show timing breakdown
